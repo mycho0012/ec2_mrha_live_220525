@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: mrha_trading_bot
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

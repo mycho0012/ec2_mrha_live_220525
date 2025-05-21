@@ -1,0 +1,56 @@
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+trading_*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Backup files
+*.bak*
+*~
+*.swp
+*.swo
+
+# IDE specific files
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+
+# Temporary fix files
+fix_*.py
+clean_*.py
+update_*.py
+use_*.py
+force_*.py
+simple_*.py
+*_test.py
+
+# Unnecessary scripts
+fix_now_*.log
+*_property_checker.py
+adaptive_*.py
+notion_diagnostics.py
