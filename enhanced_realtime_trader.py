@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import time
 import pyupbit
 import pandas as pd
-from sympy import false
 from fixed_notion_manager import FixedNotionManager as EnhancedNotionManager
 from slack_notifier import SlackNotifier
 from class_mrha import MRHATradingSystem
