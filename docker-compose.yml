@@ -1,0 +1,31 @@
+services:
+  trading-bot:
+    build: .
+    container_name: mrha_trading_bot
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  risk-manager:
+    build: .
+    container_name: mrha_risk_manager
+    restart: unless-stopped
+    command: python3 risk_monitor_scheduler.py
+    environment:
+      - TZ=Asia/Seoul
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
