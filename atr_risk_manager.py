@@ -1,7 +1,8 @@
-#!/usr/bin/env python3
+!/usr/bin/env python3
 """
-ATR-based Risk Management System for MRHA Trading
-Monitors existing positions and executes trailing stop-loss and take-profit orders
+Notion-based Fixed-Ratio Risk Management System for MRHA Trading
+Monitors existing positions and executes stop-loss and take-profit orders
+based on a fixed percentage from the average price stored in Notion.
 """
 
 import os
@@ -25,12 +26,9 @@ class ATRRiskManager:
         self.test_mode = test_mode
         self.logger = logging.getLogger(__name__)
         
-        # ATR Configuration
-        self.ATR_PERIOD = 14
-        self.STOP_LOSS_MULTIPLIER = 2.0  # 2x ATR below entry
-        self.TAKE_PROFIT_MULTIPLIER = 3.0  # 3x ATR above entry
-        self.TRAILING_STOP_THRESHOLD = 1.5  # Start trailing after 1.5x ATR profit
-        self.MAX_POSITION_RISK = 0.02  # 2% portfolio risk per position
+        # --- New Configuration ---
+        self.TAKE_PROFIT_RATIO = 0.50  # +50% from average price
+        self.STOP_LOSS_RATIO = -0.08   # -8% from average price
         
         # Initialize components
         self.upbit = pyupbit.Upbit(
@@ -43,39 +41,10 @@ class ATRRiskManager:
         
         # Risk tracking
         self.position_data = {}
-        self.risk_metrics = {}
         
-        self.logger.info(f"ATR Risk Manager initialized - Test Mode: {test_mode}")
-    
-    def calculate_atr(self, ticker: str, period: int = None) -> float:
-        """Calculate Average True Range (ATR)"""
-        if period is None:
-            period = self.ATR_PERIOD
-            
-        try:
-            # Get extended data for ATR calculation
-            df = pyupbit.get_ohlcv(ticker, interval="day", count=period + 5)
-            if df is None or len(df) < period:
-                return 0.0
-            
-            # Calculate True Range components
-            df['prev_close'] = df['close'].shift(1)
-            df['tr1'] = df['high'] - df['low']
-            df['tr2'] = abs(df['high'] - df['prev_close'])
-            df['tr3'] = abs(df['low'] - df['prev_close'])
-            
-            # True Range is the maximum of the three
-            df['true_range'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-            
-            # Calculate ATR (Simple Moving Average of True Range)
-            atr = df['true_range'].rolling(window=period).mean().iloc[-1]
-            
-            return float(atr) if not pd.isna(atr) else 0.0
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating ATR for {ticker}: {e}")
-            return 0.0
-    
+        self.logger.info(f"Fixed-Ratio Risk Manager initialized - Test Mode: {test_mode}")
+        self.logger.info(f"Take Profit: +{self.TAKE_PROFIT_RATIO:.0%}, Stop Loss: {self.STOP_LOSS_RATIO:.0%}")
+
     def get_current_positions(self) -> Dict[str, Dict]:
         """Get all current cryptocurrency positions"""
         positions = {}
@@ -114,57 +83,43 @@ class ATRRiskManager:
         except Exception as e:
             self.logger.error(f"Error getting positions: {e}")
             return {}
-    
+
     def calculate_position_risk_levels(self, ticker: str, position_data: Dict) -> Dict:
-        """Calculate stop-loss and take-profit levels for a position"""
+        """Calculate stop-loss and take-profit levels based on Notion average price."""
         try:
             current_price = position_data['current_price']
-            atr = self.calculate_atr(ticker)
             
-            if atr == 0:
-                self.logger.warning(f"ATR is 0 for {ticker}, using 2% price-based risk")
-                atr = current_price * 0.02
+            # Get average price from Notion
+            average_price = self.notion.get_average_price_from_notion(ticker)
             
-            # Get historical data to estimate entry price (using recent average)
-            df = pyupbit.get_ohlcv(ticker, interval="day", count=5)
-            if df is not None and len(df) > 0:
-                # Use recent price range as proxy for entry area
-                recent_low = df['low'].tail(3).min()
-                recent_high = df['high'].tail(3).max()
-                estimated_entry = (recent_low + recent_high) / 2
-            else:
-                estimated_entry = current_price
+            if average_price is None or average_price == 0.0:
+                self.logger.warning(f"Could not retrieve a valid average price for {ticker} from Notion. Skipping risk calculation.")
+                return {}
             
-            # Calculate risk levels
-            stop_loss = estimated_entry - (atr * self.STOP_LOSS_MULTIPLIER)
-            take_profit = estimated_entry + (atr * self.TAKE_PROFIT_MULTIPLIER)
-            trailing_threshold = estimated_entry + (atr * self.TRAILING_STOP_THRESHOLD)
+            # Calculate fixed-ratio risk levels
+            stop_loss = average_price * (1 + self.STOP_LOSS_RATIO)
+            take_profit = average_price * (1 + self.TAKE_PROFIT_RATIO)
             
-            # Calculate trailing stop (dynamic based on current price)
-            if current_price > trailing_threshold:
-                trailing_stop = current_price - (atr * self.STOP_LOSS_MULTIPLIER)
-                # Use the higher of fixed stop or trailing stop
-                stop_loss = max(stop_loss, trailing_stop)
+            current_profit_loss = ((current_price - average_price) / average_price) * 100
             
             risk_data = {
-                'atr': atr,
-                'atr_percent': (atr / current_price) * 100,
-                'estimated_entry': estimated_entry,
-                'stop_loss': max(stop_loss, 0),  # Ensure positive
+                'average_price': average_price,
+                'stop_loss': stop_loss,
                 'take_profit': take_profit,
-                'trailing_threshold': trailing_threshold,
-                'current_profit_loss': ((current_price - estimated_entry) / estimated_entry) * 100,
+                'current_profit_loss': current_profit_loss,
                 'stop_loss_distance': ((current_price - stop_loss) / current_price) * 100,
                 'take_profit_distance': ((take_profit - current_price) / current_price) * 100,
-                'position_risk': (position_data['market_value'] / self.get_total_portfolio_value()) * 100
             }
             
+            self.logger.info(f"[{ticker}] Avg Price: {average_price:,.0f}, Current: {current_price:,.0f} ({current_profit_loss:+.2f}%)")
+            self.logger.info(f"[{ticker}] Stop-Loss: {stop_loss:,.0f}, Take-Profit: {take_profit:,.0f}")
+
             return risk_data
             
         except Exception as e:
             self.logger.error(f"Error calculating risk levels for {ticker}: {e}")
             return {}
-    
+
     def get_total_portfolio_value(self) -> float:
         """Get total portfolio value in KRW"""
         try:
@@ -188,32 +143,32 @@ class ATRRiskManager:
         except Exception as e:
             self.logger.error(f"Error calculating portfolio value: {e}")
             return 0
-    
+
     def should_execute_stop_loss(self, ticker: str, position_data: Dict, risk_data: Dict) -> bool:
         """Determine if stop-loss should be executed"""
         current_price = position_data['current_price']
         stop_loss = risk_data['stop_loss']
         
         if current_price <= stop_loss:
-            loss_percent = ((current_price - risk_data['estimated_entry']) / risk_data['estimated_entry']) * 100
-            self.logger.warning(f"Stop-loss triggered for {ticker}: Price {current_price:,.0f} <= Stop {stop_loss:,.0f} (Loss: {loss_percent:.2f}%)")
+            loss_percent = risk_data.get('current_profit_loss', 0)
+            self.logger.warning(f"Stop-loss triggered for {ticker}: Price {current_price:,.0f} <= Stop {stop_loss:,.0f} (P&L: {loss_percent:.2f}%)")
             return True
             
         return False
-    
+
     def should_execute_take_profit(self, ticker: str, position_data: Dict, risk_data: Dict) -> bool:
         """Determine if take-profit should be executed"""
         current_price = position_data['current_price']
         take_profit = risk_data['take_profit']
         
         if current_price >= take_profit:
-            profit_percent = ((current_price - risk_data['estimated_entry']) / risk_data['estimated_entry']) * 100
-            self.logger.info(f"Take-profit triggered for {ticker}: Price {current_price:,.0f} >= Target {take_profit:,.0f} (Profit: {profit_percent:.2f}%)")
+            profit_percent = risk_data.get('current_profit_loss', 0)
+            self.logger.info(f"Take-profit triggered for {ticker}: Price {current_price:,.0f} >= Target {take_profit:,.0f} (P&L: {profit_percent:.2f}%)")
             return True
             
         return False
-    
-    def execute_risk_order(self, ticker: str, position_data: Dict, order_type: str, reason: str) -> bool:
+
+    def execute_risk_order(self, ticker: str, position_data: Dict, risk_data: Dict, order_type: str, reason: str) -> bool:
         """Execute stop-loss or take-profit order"""
         try:
             currency = position_data['currency']
@@ -224,14 +179,7 @@ class ATRRiskManager:
                 self.logger.warning(f"No available balance to sell for {ticker}")
                 return False
             
-            # Calculate order value
             order_value = amount * current_price
-            
-            # In test mode, use smaller amounts
-            if self.test_mode:
-                test_amount = min(amount, 0.001)  # Small test amount
-                amount = test_amount
-                order_value = amount * current_price
             
             self.logger.info(f"Executing {order_type} for {ticker}: {amount:.6f} {currency} (Value: {order_value:,.0f} KRW)")
             
@@ -242,9 +190,7 @@ class ATRRiskManager:
             )
             
             if order_result and order_result.get('success'):
-                # Send Slack notification
-                estimated_entry = position_data.get('estimated_entry', current_price)
-                profit_loss = ((current_price - estimated_entry) / estimated_entry) * 100
+                profit_loss = risk_data.get('current_profit_loss', 0)
                 
                 message = f"🛡️ **{order_type} Executed**\n"
                 message += f"• Coin: {ticker}\n"
@@ -273,7 +219,7 @@ class ATRRiskManager:
             self.logger.error(error_msg)
             self.slack.send_notification(f"❌ {error_msg}")
             return False
-    
+
     def monitor_positions(self) -> Dict:
         """Monitor all positions and execute risk management"""
         self.logger.info("Starting position risk monitoring...")
@@ -285,7 +231,6 @@ class ATRRiskManager:
         
         portfolio_value = self.get_total_portfolio_value()
         executed_orders = []
-        risk_alerts = []
         
         for ticker, position_data in positions.items():
             try:
@@ -297,46 +242,31 @@ class ATRRiskManager:
                 # Store position data for tracking
                 self.position_data[ticker] = {**position_data, **risk_data}
                 
-                # Check for execution triggers
-                executed = False
-                
                 # Check stop-loss
                 if self.should_execute_stop_loss(ticker, position_data, risk_data):
-                    if self.execute_risk_order(ticker, position_data, "STOP-LOSS", f"Price below {risk_data['stop_loss']:,.0f} KRW"):
+                    if self.execute_risk_order(ticker, position_data, risk_data, "STOP-LOSS", f"Price below {risk_data['stop_loss']:,.0f} KRW"):
                         executed_orders.append({
                             'ticker': ticker,
                             'type': 'STOP-LOSS',
                             'price': position_data['current_price'],
                             'amount': position_data['balance']
                         })
-                        executed = True
                 
                 # Check take-profit (only if stop-loss wasn't executed)
                 elif self.should_execute_take_profit(ticker, position_data, risk_data):
-                    if self.execute_risk_order(ticker, position_data, "TAKE-PROFIT", f"Price above {risk_data['take_profit']:,.0f} KRW"):
+                    if self.execute_risk_order(ticker, position_data, risk_data, "TAKE-PROFIT", f"Price above {risk_data['take_profit']:,.0f} KRW"):
                         executed_orders.append({
                             'ticker': ticker,
                             'type': 'TAKE-PROFIT',
                             'price': position_data['current_price'],
                             'amount': position_data['balance']
                         })
-                        executed = True
-                
-                # Generate risk alerts for positions that weren't executed
-                if not executed:
-                    # High volatility alert
-                    if risk_data['atr_percent'] > 8:
-                        risk_alerts.append(f"⚠️ High volatility {ticker}: ATR {risk_data['atr_percent']:.1f}%")
-                    
-                    # Large position alert
-                    if risk_data['position_risk'] > 10:
-                        risk_alerts.append(f"⚠️ Large position {ticker}: {risk_data['position_risk']:.1f}% of portfolio")
                 
             except Exception as e:
                 self.logger.error(f"Error monitoring {ticker}: {e}")
         
         # Send summary notification
-        self.send_monitoring_summary(positions, executed_orders, risk_alerts, portfolio_value)
+        self.send_monitoring_summary(positions, executed_orders, portfolio_value)
         
         # Sync portfolio with Notion if any orders were executed or periodically
         if executed_orders or self.should_sync_portfolio():
@@ -345,19 +275,17 @@ class ATRRiskManager:
         return {
             'positions_monitored': len(positions),
             'orders_executed': len(executed_orders),
-            'risk_alerts': len(risk_alerts),
             'executed_orders': executed_orders,
             'portfolio_value': portfolio_value
         }
-    
-    def send_monitoring_summary(self, positions: Dict, executed_orders: List, risk_alerts: List, portfolio_value: float):
+
+    def send_monitoring_summary(self, positions: Dict, executed_orders: List, portfolio_value: float):
         """Send Slack summary of monitoring session"""
         try:
             message = f"🔍 **Risk Monitoring Summary**\n"
             message += f"📊 Portfolio Value: {portfolio_value:,.0f} KRW\n"
             message += f"💼 Positions Monitored: {len(positions)}\n"
             message += f"⚡ Orders Executed: {len(executed_orders)}\n"
-            message += f"⚠️ Risk Alerts: {len(risk_alerts)}\n"
             message += f"🧪 Test Mode: {self.test_mode}\n\n"
             
             if executed_orders:
@@ -366,32 +294,24 @@ class ATRRiskManager:
                     message += f"• {order['type']}: {order['ticker']} at {order['price']:,.0f} KRW\n"
                 message += "\n"
             
-            if risk_alerts:
-                message += "**Risk Alerts:**\n"
-                for alert in risk_alerts[:5]:  # Limit to 5 alerts
-                    message += f"{alert}\n"
-                if len(risk_alerts) > 5:
-                    message += f"... and {len(risk_alerts) - 5} more alerts\n"
-                message += "\n"
-            
             if positions and not executed_orders:
                 message += "**Active Positions:**\n"
-                for ticker, data in list(positions.items())[:3]:  # Show top 3
+                for ticker, data in list(positions.items())[:5]:  # Show top 5
                     if ticker in self.position_data:
                         risk_data = self.position_data[ticker]
                         pnl = risk_data.get('current_profit_loss', 0)
-                        message += f"• {ticker}: {pnl:+.1f}% (ATR: {risk_data.get('atr_percent', 0):.1f}%)\n"
+                        message += f"• {ticker}: {pnl:+.1f}%\n"
             
             self.slack.send_notification(message)
             
         except Exception as e:
             self.logger.error(f"Error sending monitoring summary: {e}")
-    
+
     def run_risk_monitoring_cycle(self):
         """Run a complete risk monitoring cycle"""
         try:
             self.logger.info("=" * 50)
-            self.logger.info(f"ATR Risk Monitoring - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            self.logger.info(f"Fixed-Ratio Risk Monitoring - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             self.logger.info("=" * 50)
             
             # Monitor positions
@@ -416,39 +336,7 @@ class ATRRiskManager:
             current_positions = self.get_current_positions()
             
             # Convert to Notion portfolio format
-            portfolio_data = []
-            
-            # Add KRW balance
-            try:
-                krw_balance = self.upbit.get_balance("KRW")
-                if krw_balance > 0:
-                    portfolio_data.append({
-                        'ticker': 'KRW',
-                        'amount': krw_balance,
-                        'avg_price': 1.0,
-                        'current_price': 1.0,
-                        'total_value': krw_balance
-                    })
-            except Exception as e:
-                self.logger.warning(f"Could not get KRW balance: {e}")
-            
-            # Add cryptocurrency positions
-            for ticker_key, position in current_positions.items():
-                try:
-                    # Get average price (estimate using current price for now)
-                    # In production, this could be enhanced to track actual purchase prices
-                    avg_price = position['current_price']  # Simplified for now
-                    
-                    portfolio_data.append({
-                        'ticker': ticker_key,
-                        'amount': position['total_amount'],
-                        'avg_price': avg_price,
-                        'current_price': position['current_price'],
-                        'total_value': position['market_value']
-                    })
-                except Exception as e:
-                    self.logger.warning(f"Error processing position {ticker_key}: {e}")
-                    continue
+            portfolio_data = self.get_current_portfolio_for_notion()
             
             # Update Notion portfolio database
             if portfolio_data:
@@ -579,6 +467,9 @@ def main():
     
     # Initialize risk manager
     test_mode = os.getenv('TEST_MODE', 'True').lower() == 'true'
+    # The class name is still ATRRiskManager, but the logic is changed.
+    # For clarity, you could rename the class to FixedRatioRiskManager, but that would require changes in risk_monitor_scheduler.py as well.
+    # We will keep the class name for now to minimize changes.
     risk_manager = ATRRiskManager(test_mode=test_mode)
     
     # Run monitoring cycle
