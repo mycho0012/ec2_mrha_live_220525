@@ -108,9 +108,9 @@ class RiskMonitorScheduler:
             schedule.every(5).minutes.do(self.run_risk_monitoring)
             self.logger.info("Test mode: Scheduled to run every 5 minutes")
         else:
-            # Production: run every hour
-            schedule.every().hour.do(self.run_risk_monitoring)
-            self.logger.info("Production mode: Scheduled to run every hour")
+            # Production: run every 30 minutes
+            schedule.every(30).minutes.do(self.run_risk_monitoring)
+            self.logger.info("Production mode: Scheduled to run every 30 minutes")
         
         # Send startup notification
         self.slack.send_notification(
