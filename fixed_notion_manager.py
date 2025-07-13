@@ -416,6 +416,45 @@ HOLD 시그널: {len([s for s in signals_data if s['signal'] == 'HOLD'])}
             self.slack.notify_error("시그널 조회 실패", error_msg)
             return []
     
+    def get_average_price_from_notion(self, ticker: str) -> float:
+        """
+        Notion 포트폴리오 DB에서 특정 티커의 평균 매수 단가를 가져옵니다.
+        """
+        try:
+            response = self.notion.databases.query(
+                database_id=self.portfolio_db_id,
+                filter={
+                    "property": "Ticker",
+                    "select": {
+                        "equals": ticker
+                    }
+                }
+            )
+            
+            results = response.get('results', [])
+            if not results:
+                print(f"Notion에서 {ticker}에 대한 포지션 정보를 찾을 수 없습니다.")
+                return 0.0
+
+            # 가장 최근 항목을 사용 (여러 개가 있을 경우)
+            page = results[0]
+            properties = page.get('properties', {})
+            
+            avg_price_prop = properties.get('Average_Price')
+            if avg_price_prop and avg_price_prop.get('number') is not None:
+                avg_price = float(avg_price_prop['number'])
+                print(f"Notion에서 {ticker}의 평균 매수 단가 조회 성공: {avg_price:,.0f} KRW")
+                return avg_price
+            else:
+                print(f"Notion의 {ticker} 항목에 'Average_Price' 속성이 없거나 값이 비어있습니다.")
+                return 0.0
+
+        except Exception as e:
+            error_msg = f"Notion에서 평균 매수 단가 조회 중 오류 발생 ({ticker}): {e}"
+            print(error_msg)
+            self.slack.notify_error("Notion 조회 오류", error_msg)
+            return 0.0
+
     def update_portfolio(self, portfolio_data):
         """
         포트폴리오 DB 업데이트
